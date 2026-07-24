@@ -13,7 +13,8 @@
 //
 // Production posture is verify-only — with no Signer configured, the minting
 // endpoints report 404 and only externally-issued tokens open a session. A
-// real IdP plugs in here.
+// real IdP plugs in through <PREFIX>_JWT_PUBLIC_KEY + <PREFIX>_JWT_ISSUER;
+// see NewAuthenticators.
 package appsession
 
 import (

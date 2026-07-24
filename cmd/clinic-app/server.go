@@ -4,7 +4,6 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
-	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/operatinggraph/lattice/internal/appsession"
 	"github.com/operatinggraph/lattice/internal/gateway/auth"
 	"github.com/operatinggraph/lattice/internal/substrate"
 )
@@ -24,25 +24,23 @@ var webFS embed.FS
 // NATS was unreachable at startup; every handler checks requireConn first and
 // returns a JSON error rather than dereferencing a nil connection.
 type server struct {
-	conn        *substrate.Conn
-	adminActor  string
-	logger      *slog.Logger
-	natsTimeout time.Duration
+	conn            *substrate.Conn
+	bootstrapLoaded bool
+	logger          *slog.Logger
+	natsTimeout     time.Duration
 
 	// The read boundary (D1.5). pgPool is the protected clinicAppointmentsRead
 	// read-model pool; nil when CLINIC_APP_PG_DSN is unset → protected reads
-	// return a clean 502 rather than panicking. authn verifies the read actor's
-	// JWT; nil when no auth posture is configured → protected reads 401 (fail
-	// closed). devSigner mints demo tokens; nil unless CLINIC_APP_DEV_AUTH.
-	pgPool    *pgxpool.Pool
-	authn     *auth.Authenticator
-	devSigner *devSigner
+	// return a clean 502 rather than panicking. authn is the session cookie's
+	// verifier, held here so the health probe can report whether an auth
+	// posture is configured at all; nil ⇒ every session-gated request 401s
+	// (fail closed).
+	pgPool *pgxpool.Pool
+	authn  *auth.Authenticator
 
-	// credBindings is the shared credential→identity resolution seam
-	// authenticateRead consults (real-actor-write-auth-e2e-design.md §5);
-	// nil when the credential-bindings bucket is unavailable — every actor
-	// then reads as itself, exactly as before this seam existed.
-	credBindings credentialBindingResolver
+	// session serves the login/logout/whoami/refresh surface and resolves every
+	// request to a signed-in identity (internal/appsession).
+	session *appsession.Manager
 
 	// gatewayURL is the Gateway's externally-reachable base URL (e.g.
 	// http://localhost:8080), served to the FE via GET /api/config so it can
@@ -64,24 +62,26 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 		// programmer error, not a runtime condition.
 		panic("clinic-app: embed web sub-fs: " + err.Error())
 	}
-	mux.Handle("/", http.FileServer(http.FS(sub)))
+	inner := http.NewServeMux()
+	inner.Handle("/", http.FileServer(http.FS(sub)))
 
-	mux.HandleFunc("/api/providers", s.handleProviders)
-	mux.HandleFunc("/api/sites", s.handleSites)
-	mux.HandleFunc("/api/provider-sites", s.handleProviderSites)
-	mux.HandleFunc("/api/residents", s.handleResidents)
-	mux.HandleFunc("/api/staff/patients", s.handleStaffPatients)
-	mux.HandleFunc("/api/appointments", s.handleAppointments)
-	mux.HandleFunc("/api/my-appointments", s.handleMyAppointments)
-	mux.HandleFunc("/api/my-schedule", s.handleMyProviderSchedule)
-	mux.HandleFunc("/api/staff/appointments", s.handleStaffAppointments)
-	mux.HandleFunc("/api/staff/dev-token", s.handleStaffDevToken)
-	mux.HandleFunc("/api/my-visit-series", s.handleMyVisitSeries)
-	mux.HandleFunc("/api/staff/visit-series", s.handleStaffVisitSeries)
-	mux.HandleFunc("/api/ledger", s.handleLedger)
-	mux.HandleFunc("/api/wellness/sessions", s.handleWellnessSessions)
-	mux.HandleFunc("/api/dev-token", s.handleDevToken)
-	mux.HandleFunc("/api/config", s.handleConfig)
+	inner.HandleFunc("/api/providers", s.handleProviders)
+	inner.HandleFunc("/api/sites", s.handleSites)
+	inner.HandleFunc("/api/provider-sites", s.handleProviderSites)
+	inner.HandleFunc("/api/residents", s.handleResidents)
+	inner.HandleFunc("/api/staff/patients", s.handleStaffPatients)
+	inner.HandleFunc("/api/appointments", s.handleAppointments)
+	inner.HandleFunc("/api/my-appointments", s.handleMyAppointments)
+	inner.HandleFunc("/api/my-schedule", s.handleMyProviderSchedule)
+	inner.HandleFunc("/api/staff/appointments", s.handleStaffAppointments)
+	inner.HandleFunc("/api/my-visit-series", s.handleMyVisitSeries)
+	inner.HandleFunc("/api/staff/visit-series", s.handleStaffVisitSeries)
+	inner.HandleFunc("/api/ledger", s.handleLedger)
+	inner.HandleFunc("/api/wellness/sessions", s.handleWellnessSessions)
+	inner.HandleFunc("/api/config", s.handleConfig)
+
+	s.session.RegisterRoutes(inner)
+	mux.Handle("/", s.session.RequireSession(inner))
 }
 
 // handleConfig implements GET /api/config: the FE's one bit of runtime
@@ -124,10 +124,4 @@ func (s *server) requireConn(w http.ResponseWriter) (*substrate.Conn, bool) {
 // derived from the incoming request's context so a client disconnect cancels.
 func (s *server) reqContext(r *http.Request) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(r.Context(), s.natsTimeout)
-}
-
-// requireBody reads up to 1 MiB of the request body, the cap for the small JSON
-// op payloads this app submits.
-func requireBody(r *http.Request) ([]byte, error) {
-	return io.ReadAll(io.LimitReader(r.Body, 1<<20))
 }

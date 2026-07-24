@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/operatinggraph/lattice/internal/refractor/adapter"
@@ -16,7 +15,7 @@ import (
 // WildcardSeesEverything). It provisions the table + policy with the SAME
 // refractor helpers a live activation uses, seeds two patients' series rows +
 // self-grants, and drives handleMyVisitSeries / handleStaffVisitSeries through
-// httptest with minted JWTs.
+// the real session middleware with signed session cookies.
 //
 // Gated: skipped unless POSTGRES_TEST_DSN is set and -short is not active.
 
@@ -87,30 +86,11 @@ func TestVisitSeriesReadBoundary_RLS_Enforcement(t *testing.T) {
 	reader := poolInSchema(t, dsn, clinicRLSTestRole)
 	defer reader.Close()
 
-	t.Setenv("CLINIC_APP_DEV_AUTH", "1")
-	authn, signer, err := setupReadAuth(discardLogger(), true, nil)
-	if err != nil {
-		t.Fatalf("setupReadAuth: %v", err)
-	}
-	s := &server{logger: discardLogger(), natsTimeout: testTimeout, pgPool: reader, authn: authn, devSigner: signer}
+	s, cookieFor := devSessionServer(t, func(s *server) { s.pgPool = reader })
 
-	mint := func(sub string) string {
+	getMy := func(t *testing.T, c *http.Cookie) (int, []protectedVisitSeriesRow) {
 		t.Helper()
-		tok, _, err := signer.mint(sub)
-		if err != nil {
-			t.Fatalf("mint %s: %v", sub, err)
-		}
-		return tok
-	}
-
-	getMy := func(t *testing.T, authz string) (int, []protectedVisitSeriesRow) {
-		t.Helper()
-		rec := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodGet, "/api/my-visit-series", nil)
-		if authz != "" {
-			r.Header.Set("Authorization", authz)
-		}
-		s.handleMyVisitSeries(rec, r)
+		rec := sessionGET(s, s.handleMyVisitSeries, "/api/my-visit-series", c)
 		var resp struct {
 			Series []protectedVisitSeriesRow `json:"series"`
 		}
@@ -118,14 +98,9 @@ func TestVisitSeriesReadBoundary_RLS_Enforcement(t *testing.T) {
 		return rec.Code, resp.Series
 	}
 
-	getStaff := func(t *testing.T, authz string) (int, []protectedVisitSeriesRow) {
+	getStaff := func(t *testing.T, c *http.Cookie) (int, []protectedVisitSeriesRow) {
 		t.Helper()
-		rec := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodGet, "/api/staff/visit-series", nil)
-		if authz != "" {
-			r.Header.Set("Authorization", authz)
-		}
-		s.handleStaffVisitSeries(rec, r)
+		rec := sessionGET(s, s.handleStaffVisitSeries, "/api/staff/visit-series", c)
 		var resp struct {
 			Series []protectedVisitSeriesRow `json:"series"`
 		}
@@ -134,7 +109,7 @@ func TestVisitSeriesReadBoundary_RLS_Enforcement(t *testing.T) {
 	}
 
 	t.Run("A sees only A's series", func(t *testing.T) {
-		code, rows := getMy(t, "Bearer "+mint(subPatientA))
+		code, rows := getMy(t, cookieFor(subPatientA))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}
@@ -144,7 +119,7 @@ func TestVisitSeriesReadBoundary_RLS_Enforcement(t *testing.T) {
 	})
 
 	t.Run("unauthenticated is 401", func(t *testing.T) {
-		if code, _ := getMy(t, ""); code != http.StatusUnauthorized {
+		if code, _ := getMy(t, nil); code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want 401", code)
 		}
 	})
@@ -152,7 +127,7 @@ func TestVisitSeriesReadBoundary_RLS_Enforcement(t *testing.T) {
 	t.Run("revoked grant hides the row", func(t *testing.T) {
 		exec("UPDATE actor_read_grants SET is_deleted = true WHERE actor_id = $1", subPatientA)
 		defer exec("UPDATE actor_read_grants SET is_deleted = false WHERE actor_id = $1", subPatientA)
-		code, rows := getMy(t, "Bearer "+mint(subPatientA))
+		code, rows := getMy(t, cookieFor(subPatientA))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}
@@ -162,7 +137,7 @@ func TestVisitSeriesReadBoundary_RLS_Enforcement(t *testing.T) {
 	})
 
 	t.Run("staff sees every patient's series via the wildcard grant", func(t *testing.T) {
-		code, rows := getStaff(t, "Bearer "+mint(subStaff))
+		code, rows := getStaff(t, cookieFor(subStaff))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}
@@ -172,7 +147,7 @@ func TestVisitSeriesReadBoundary_RLS_Enforcement(t *testing.T) {
 	})
 
 	t.Run("an ordinary patient (self-grant only, no wildcard) still sees only their own row on the staff endpoint", func(t *testing.T) {
-		code, rows := getStaff(t, "Bearer "+mint(subPatientB))
+		code, rows := getStaff(t, cookieFor(subPatientB))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}
@@ -181,8 +156,9 @@ func TestVisitSeriesReadBoundary_RLS_Enforcement(t *testing.T) {
 		}
 	})
 
-	t.Run("forged token is 401", func(t *testing.T) {
-		if code, _ := getMy(t, "Bearer not.a.jwt"); code != http.StatusUnauthorized {
+	t.Run("forged cookie is 401", func(t *testing.T) {
+		forged := &http.Cookie{Name: s.session.CookieName(), Value: "not.a.jwt"}
+		if code, _ := getMy(t, forged); code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want 401", code)
 		}
 	})

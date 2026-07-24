@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/operatinggraph/lattice/internal/refractor/adapter"
@@ -78,45 +77,25 @@ func TestLedgerReadBoundary_WildcardRequiredNonWildcardDenied(t *testing.T) {
 	reader := poolInSchema(t, dsn, clinicRLSTestRole)
 	defer reader.Close()
 
-	t.Setenv("CLINIC_APP_DEV_AUTH", "1")
-	authn, signer, err := setupReadAuth(discardLogger(), true, nil)
-	if err != nil {
-		t.Fatalf("setupReadAuth: %v", err)
-	}
-	s := &server{logger: discardLogger(), natsTimeout: testTimeout, pgPool: reader, authn: authn, devSigner: signer}
+	s, cookieFor := devSessionServer(t, func(s *server) { s.pgPool = reader })
 
-	mint := func(sub string) string {
+	// getLedger drives handleLedger through the real session middleware exactly
+	// as the FE would. It never reaches s.requireConn (no NATS conn is wired
+	// here) unless the session + visibility gate passes — a 401/403 proves the
+	// gate rejected the request before any lens read was attempted.
+	getLedger := func(t *testing.T, c *http.Cookie) int {
 		t.Helper()
-		tok, _, err := signer.mint(sub)
-		if err != nil {
-			t.Fatalf("mint %s: %v", sub, err)
-		}
-		return tok
-	}
-
-	// getLedger drives handleLedger through httptest exactly as the FE would.
-	// It never reaches s.requireConn (no NATS conn is wired here) unless the
-	// auth + visibility gate passes — a 401/403 proves the gate rejected the
-	// request before any lens read was attempted.
-	getLedger := func(t *testing.T, authz string) int {
-		t.Helper()
-		rec := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodGet, "/api/ledger?patientKey="+patientKey, nil)
-		if authz != "" {
-			r.Header.Set("Authorization", authz)
-		}
-		s.handleLedger(rec, r)
-		return rec.Code
+		return sessionGET(s, s.handleLedger, "/api/ledger?patientKey="+patientKey, c).Code
 	}
 
 	t.Run("unauthenticated is 401 — the confirmed leak this closes", func(t *testing.T) {
-		if code := getLedger(t, ""); code != http.StatusUnauthorized {
+		if code := getLedger(t, nil); code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want 401", code)
 		}
 	})
 
 	t.Run("an authenticated actor with no wildcard grant is 403", func(t *testing.T) {
-		if code := getLedger(t, "Bearer "+mint(subPatientA)); code != http.StatusForbidden {
+		if code := getLedger(t, cookieFor(subPatientA)); code != http.StatusForbidden {
 			t.Fatalf("status = %d, want 403 (no wildcard grant, no self-anchor on the roster)", code)
 		}
 	})
@@ -125,7 +104,7 @@ func TestLedgerReadBoundary_WildcardRequiredNonWildcardDenied(t *testing.T) {
 		// No NATS conn is wired in this fixture, so a passing gate surfaces as
 		// 502 (requireConn) rather than 200 — the point is proving it is no
 		// longer 401/403, i.e. the wildcard grant was honored.
-		code := getLedger(t, "Bearer "+mint(subStaff))
+		code := getLedger(t, cookieFor(subStaff))
 		if code == http.StatusUnauthorized || code == http.StatusForbidden {
 			t.Fatalf("status = %d, want past the auth gate (502, no NATS conn wired) — the wildcard grant should have cleared it", code)
 		}
@@ -134,7 +113,7 @@ func TestLedgerReadBoundary_WildcardRequiredNonWildcardDenied(t *testing.T) {
 	t.Run("revoked wildcard grant denies again", func(t *testing.T) {
 		exec("UPDATE actor_read_grants SET is_deleted = true WHERE actor_id = $1 AND anchor_id = $2", subStaff, adapter.WildcardAnchor)
 		defer exec("UPDATE actor_read_grants SET is_deleted = false WHERE actor_id = $1 AND anchor_id = $2", subStaff, adapter.WildcardAnchor)
-		if code := getLedger(t, "Bearer "+mint(subStaff)); code != http.StatusForbidden {
+		if code := getLedger(t, cookieFor(subStaff)); code != http.StatusForbidden {
 			t.Fatalf("status = %d, want 403 once the wildcard grant is revoked", code)
 		}
 	})

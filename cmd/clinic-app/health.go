@@ -15,11 +15,11 @@ import (
 func (s *server) healthProbe(ctx context.Context) healthkv.Snapshot {
 	var issues []healthkv.Issue
 
-	if s.adminActor == "" {
+	if !s.bootstrapLoaded {
 		issues = append(issues, healthkv.Issue{
-			Code:     "AdminActorUnconfigured",
+			Code:     "BootstrapUnloaded",
 			Severity: "error",
-			Message:  "bootstrap.json not loaded (version mismatch?); booking/cancel/create will 400",
+			Message:  "bootstrap.json not loaded (version mismatch?); platform-derived identifiers are unavailable",
 		})
 	}
 	if s.conn == nil || !s.conn.NATS().IsConnected() {

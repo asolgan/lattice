@@ -1356,7 +1356,9 @@ run-clinic-app:
 	@echo "==> Building clinic-app binary..."
 	go build -o bin/clinic-app ./cmd/clinic-app
 	@echo "==> Clinic app on http://127.0.0.1:7799 (Ctrl-C to stop)..."
-	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_CLINIC_APP) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/clinic-app
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_CLINIC_APP) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) \
+		CLINIC_APP_PG_DSN="$(CLINIC_APP_PG_DSN)" CLINIC_APP_DEV_AUTH=1 \
+		./bin/clinic-app
 
 ## run-cafe-app — Build + run the Café app in the FOREGROUND. Open
 ## http://127.0.0.1:7801. Requires a running deployment with the Café vertical

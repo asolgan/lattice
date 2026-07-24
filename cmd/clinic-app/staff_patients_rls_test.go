@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/operatinggraph/lattice/internal/refractor/adapter"
@@ -88,43 +87,24 @@ func TestStaffPatientsReadBoundary_WildcardSeesEverything(t *testing.T) {
 	reader := poolInSchema(t, dsn, clinicRLSTestRole)
 	defer reader.Close()
 
-	t.Setenv("CLINIC_APP_DEV_AUTH", "1")
-	authn, signer, err := setupReadAuth(discardLogger(), true, nil)
-	if err != nil {
-		t.Fatalf("setupReadAuth: %v", err)
-	}
-	s := &server{logger: discardLogger(), natsTimeout: testTimeout, pgPool: reader, authn: authn, devSigner: signer}
+	s, cookieFor := devSessionServer(t, func(s *server) { s.pgPool = reader })
 
-	mint := func(sub string) string {
+	getPath := func(t *testing.T, path string, c *http.Cookie) (int, []protectedPatientRow) {
 		t.Helper()
-		tok, _, err := signer.mint(sub)
-		if err != nil {
-			t.Fatalf("mint %s: %v", sub, err)
-		}
-		return tok
-	}
-
-	getPath := func(t *testing.T, path, authz string) (int, []protectedPatientRow) {
-		t.Helper()
-		rec := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodGet, path, nil)
-		if authz != "" {
-			r.Header.Set("Authorization", authz)
-		}
-		s.handleStaffPatients(rec, r)
+		rec := sessionGET(s, s.handleStaffPatients, path, c)
 		var resp struct {
 			Patients []protectedPatientRow `json:"patients"`
 		}
 		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 		return rec.Code, resp.Patients
 	}
-	get := func(t *testing.T, authz string) (int, []protectedPatientRow) {
+	get := func(t *testing.T, c *http.Cookie) (int, []protectedPatientRow) {
 		t.Helper()
-		return getPath(t, "/api/staff/patients", authz)
+		return getPath(t, "/api/staff/patients", c)
 	}
 
 	t.Run("staff sees every patient via the wildcard grant", func(t *testing.T) {
-		code, rows := get(t, "Bearer "+mint(subStaff))
+		code, rows := get(t, cookieFor(subStaff))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}
@@ -134,7 +114,7 @@ func TestStaffPatientsReadBoundary_WildcardSeesEverything(t *testing.T) {
 	})
 
 	t.Run("staff filters by name via ?q= — case-insensitive substring", func(t *testing.T) {
-		code, rows := getPath(t, "/api/staff/patients?q=riv", "Bearer "+mint(subStaff))
+		code, rows := getPath(t, "/api/staff/patients?q=riv", cookieFor(subStaff))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}
@@ -144,7 +124,7 @@ func TestStaffPatientsReadBoundary_WildcardSeesEverything(t *testing.T) {
 	})
 
 	t.Run("?q= still enforces RLS — no wildcard grant sees nothing even on a matching name", func(t *testing.T) {
-		code, rows := getPath(t, "/api/staff/patients?q=riv", "Bearer "+mint(subPatientA))
+		code, rows := getPath(t, "/api/staff/patients?q=riv", cookieFor(subPatientA))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}
@@ -154,7 +134,7 @@ func TestStaffPatientsReadBoundary_WildcardSeesEverything(t *testing.T) {
 	})
 
 	t.Run("an ordinary patient (self-grant only, no wildcard) sees nothing — no self-anchor exists on the roster", func(t *testing.T) {
-		code, rows := get(t, "Bearer "+mint(subPatientA))
+		code, rows := get(t, cookieFor(subPatientA))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}
@@ -164,7 +144,7 @@ func TestStaffPatientsReadBoundary_WildcardSeesEverything(t *testing.T) {
 	})
 
 	t.Run("unauthenticated is 401", func(t *testing.T) {
-		if code, _ := get(t, ""); code != http.StatusUnauthorized {
+		if code, _ := get(t, nil); code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want 401", code)
 		}
 	})
@@ -172,7 +152,7 @@ func TestStaffPatientsReadBoundary_WildcardSeesEverything(t *testing.T) {
 	t.Run("revoked wildcard grant hides everything again", func(t *testing.T) {
 		exec("UPDATE actor_read_grants SET is_deleted = true WHERE actor_id = $1 AND anchor_id = '*'", subStaff)
 		defer exec("UPDATE actor_read_grants SET is_deleted = false WHERE actor_id = $1 AND anchor_id = '*'", subStaff)
-		code, rows := get(t, "Bearer "+mint(subStaff))
+		code, rows := get(t, cookieFor(subStaff))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}

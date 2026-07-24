@@ -15,6 +15,8 @@
       <select id="patient" aria-label="Choose which patient you are"></select>
       <button id="new-patient" class="ghost">＋ New patient</button>
       <span id="patient-contact" class="patient-contact" aria-live="polite"></span>
+      <span id="signed-in-as" class="patient-contact" aria-live="polite"></span>
+      <button id="sign-out" class="ghost" hidden>Sign out</button>
     </div>
   </header>
 
@@ -38,10 +40,6 @@
           <div class="field">
             <label>Patient</label>
             <div id="book-patient" class="readonly">Select a patient above first.</div>
-          </div>
-          <div class="field">
-            <label class="check"><input type="checkbox" id="book-self" disabled /> Book as this patient (self-service, not staff-on-behalf-of)</label>
-            <p class="hint" id="book-self-hint"></p>
           </div>
           <div class="field">
             <label for="book-specialty">Specialty <span class="opt">(optional)</span></label>
@@ -153,8 +151,6 @@
         </select>
         <span id="appts-summary" class="summary"></span>
       </div>
-      <label class="check"><input type="checkbox" id="appts-self" disabled /> Self-service (act as this patient — Cancel/Reschedule only, not staff-on-behalf-of)</label>
-      <p class="hint" id="appts-self-hint"></p>
       <div id="appts" class="grid" aria-live="polite"></div>
       <div id="appts-empty" class="empty" hidden></div>
     </section>

@@ -1,7 +1,10 @@
 package appsession
 
 import (
+	"crypto"
 	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"net"
@@ -13,6 +16,10 @@ import (
 
 	"github.com/operatinggraph/lattice/internal/gateway/auth"
 )
+
+// defaultIdPKeyID is the key id an external-IdP deployment's public key is
+// filed under when <envPrefix>_JWT_KID names none.
+const defaultIdPKeyID = "idp-key-1"
 
 // DevTokenTTL is how long a dev-minted session token stays valid. The
 // browser renews well before this through POST /api/session/refresh.
@@ -78,15 +85,31 @@ func NewDevSigner(logger *slog.Logger, envPrefix string, loopback bool) (*Signer
 	return NewSigner(priv, auth.DevKeyID, DevTokenTTL, time.Now), nil
 }
 
-// NewAuthenticators builds the two verifiers session cookies are checked
-// against: strict enforces auth.DefaultClockSkew and backs every ordinary
-// per-request check, while refresh additionally tolerates RefreshGrace past a
-// token's exp and backs ONLY POST /api/session/refresh. Both are nil when
-// signer is nil — verifying a cookie is meaningless with no minter to have
-// issued one.
-func NewAuthenticators(logger *slog.Logger, envPrefix string, signer *Signer) (strict, refresh *auth.Authenticator, err error) {
+// NewAuthenticators builds the verifiers session cookies are checked against,
+// in whichever of the two postures the environment configures. revocationChecker
+// gates every verified token against the kill-switch bucket and may be nil (no
+// kill-switch, the short token TTL as the only backstop).
+//
+// DEMO (signer non-nil): two verifiers over the shared dev key. strict enforces
+// auth.DefaultClockSkew and backs every ordinary per-request check; refresh
+// additionally tolerates RefreshGrace past a token's exp and backs ONLY POST
+// /api/session/refresh.
+//
+// PRODUCTION (signer nil, <envPrefix>_JWT_PUBLIC_KEY set): one verify-only
+// authenticator over the external IdP's PEM public key, pinned to the issuer
+// <envPrefix>_JWT_ISSUER names. There is no refresh verifier — nothing in this
+// process minted the cookie, so nothing here can renew it, and handleRefresh
+// reports 404.
+//
+// Neither configured: all nil. A read gated on a session then fails closed,
+// which is the correct default for an unprovisioned boundary.
+func NewAuthenticators(logger *slog.Logger, envPrefix string, signer *Signer, revocationChecker auth.RevocationChecker) (strict, refresh *auth.Authenticator, err error) {
 	if signer == nil {
-		return nil, nil, nil
+		strict, err = idpAuthenticator(logger, envPrefix, revocationChecker)
+		return strict, nil, err
+	}
+	if strings.TrimSpace(os.Getenv(envPrefix+"_JWT_PUBLIC_KEY")) != "" {
+		logger.Warn("both " + envPrefix + "_DEV_AUTH and " + envPrefix + "_JWT_PUBLIC_KEY are set; dev auth wins and the configured IdP public key is IGNORED")
 	}
 	trustedKeys, trustedSpecs, err := auth.LoadTrustedKeys(auth.KeySourceConfig{
 		DevMode:    true,
@@ -104,7 +127,52 @@ func NewAuthenticators(logger *slog.Logger, envPrefix string, signer *Signer) (s
 	if err != nil {
 		return nil, nil, fmt.Errorf("dev-auth: build session refresh verifier: %w", err)
 	}
-	return auth.NewAuthenticator(verifier, nil), auth.NewAuthenticator(refreshVerifier, nil), nil
+	return auth.NewAuthenticator(verifier, revocationChecker), auth.NewAuthenticator(refreshVerifier, revocationChecker), nil
+}
+
+// idpAuthenticator builds the verify-only authenticator an external IdP's
+// public key configures, or nil when <envPrefix>_JWT_PUBLIC_KEY names none.
+func idpAuthenticator(logger *slog.Logger, envPrefix string, revocationChecker auth.RevocationChecker) (*auth.Authenticator, error) {
+	pemKey := os.Getenv(envPrefix + "_JWT_PUBLIC_KEY")
+	if strings.TrimSpace(pemKey) == "" {
+		return nil, nil
+	}
+	pub, err := parsePublicKeyPEM(pemKey)
+	if err != nil {
+		return nil, fmt.Errorf("%s_JWT_PUBLIC_KEY: %w", envPrefix, err)
+	}
+	issuer := os.Getenv(envPrefix + "_JWT_ISSUER")
+	if strings.TrimSpace(issuer) == "" {
+		return nil, fmt.Errorf("%s_JWT_ISSUER is required alongside %s_JWT_PUBLIC_KEY "+
+			"(a configured external IdP source MUST pin an expected iss — Contract #11 §3.2)", envPrefix, envPrefix)
+	}
+	kid := os.Getenv(envPrefix + "_JWT_KID")
+	if strings.TrimSpace(kid) == "" {
+		kid = defaultIdPKeyID
+	}
+	verifier, err := auth.NewVerifier(auth.Config{
+		Keys:     map[string]crypto.PublicKey{kid: pub},
+		KeyInfo:  map[string]auth.KeyInfo{kid: {Spec: auth.BindingSpec{Mode: auth.ModeOpaque, Issuer: issuer}}},
+		Audience: os.Getenv(envPrefix + "_JWT_AUDIENCE"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build session verifier: %w", err)
+	}
+	logger.Info("session boundary configured with external IdP public key", "kid", kid)
+	return auth.NewAuthenticator(verifier, revocationChecker), nil
+}
+
+// parsePublicKeyPEM decodes a PEM-encoded RSA or ECDSA public key (PKIX).
+func parsePublicKeyPEM(pemStr string) (crypto.PublicKey, error) {
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		return nil, fmt.Errorf("no PEM block found")
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse PKIX public key: %w", err)
+	}
+	return pub, nil
 }
 
 // Truthy reads the platform's env-flag vocabulary.

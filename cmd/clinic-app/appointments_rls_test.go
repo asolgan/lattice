@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"testing"
 
@@ -19,7 +18,8 @@ import (
 // TestReadBoundary_RLS_Enforcement). It provisions the table + policy with the
 // SAME refractor helpers a live activation uses (BuildProtectedTableDDL /
 // BuildGrantTableDDL), seeds two patients' rows + self-grants, and drives
-// handleMyAppointments through httptest with minted JWTs.
+// handleMyAppointments through the real session middleware with signed
+// session cookies.
 //
 // Enforcement is REAL: the reader runs as a NON-superuser role (RLS is bypassed
 // by superusers/BYPASSRLS, so the app role must not be one — design §3.3). The
@@ -171,31 +171,12 @@ func TestReadBoundary_RLS_Enforcement(t *testing.T) {
 		}
 	})
 
-	// The authenticated app: dev posture (an ephemeral key the verifier trusts).
-	t.Setenv("CLINIC_APP_DEV_AUTH", "1")
-	authn, signer, err := setupReadAuth(discardLogger(), true, nil)
-	if err != nil {
-		t.Fatalf("setupReadAuth: %v", err)
-	}
-	s := &server{logger: discardLogger(), natsTimeout: testTimeout, pgPool: reader, authn: authn, devSigner: signer}
+	// The signed-in app: the demo session posture over the shared dev key.
+	s, cookieFor := devSessionServer(t, func(s *server) { s.pgPool = reader })
 
-	mint := func(sub string) string {
+	get := func(t *testing.T, c *http.Cookie) (int, []protectedAppointmentRow) {
 		t.Helper()
-		tok, _, err := signer.mint(sub)
-		if err != nil {
-			t.Fatalf("mint %s: %v", sub, err)
-		}
-		return tok
-	}
-
-	get := func(t *testing.T, authz string) (int, []protectedAppointmentRow) {
-		t.Helper()
-		rec := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodGet, "/api/my-appointments", nil)
-		if authz != "" {
-			r.Header.Set("Authorization", authz)
-		}
-		s.handleMyAppointments(rec, r)
+		rec := sessionGET(s, s.handleMyAppointments, "/api/my-appointments", c)
 		var resp struct {
 			Appointments []protectedAppointmentRow `json:"appointments"`
 		}
@@ -204,7 +185,7 @@ func TestReadBoundary_RLS_Enforcement(t *testing.T) {
 	}
 
 	t.Run("A sees only A", func(t *testing.T) {
-		code, rows := get(t, "Bearer "+mint(subPatientA))
+		code, rows := get(t, cookieFor(subPatientA))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}
@@ -214,7 +195,7 @@ func TestReadBoundary_RLS_Enforcement(t *testing.T) {
 	})
 
 	t.Run("B sees only B", func(t *testing.T) {
-		code, rows := get(t, "Bearer "+mint(subPatientB))
+		code, rows := get(t, cookieFor(subPatientB))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}
@@ -224,13 +205,14 @@ func TestReadBoundary_RLS_Enforcement(t *testing.T) {
 	})
 
 	t.Run("unauthenticated is 401", func(t *testing.T) {
-		if code, _ := get(t, ""); code != http.StatusUnauthorized {
+		if code, _ := get(t, nil); code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want 401", code)
 		}
 	})
 
-	t.Run("forged token is 401", func(t *testing.T) {
-		if code, _ := get(t, "Bearer not.a.jwt"); code != http.StatusUnauthorized {
+	t.Run("forged cookie is 401", func(t *testing.T) {
+		forged := &http.Cookie{Name: s.session.CookieName(), Value: "not.a.jwt"}
+		if code, _ := get(t, forged); code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want 401", code)
 		}
 	})
@@ -240,7 +222,7 @@ func TestReadBoundary_RLS_Enforcement(t *testing.T) {
 		// sees nothing — the RLS path honors revocation.
 		exec("UPDATE actor_read_grants SET is_deleted = true WHERE actor_id = $1", subPatientA)
 		defer exec("UPDATE actor_read_grants SET is_deleted = false WHERE actor_id = $1", subPatientA)
-		code, rows := get(t, "Bearer "+mint(subPatientA))
+		code, rows := get(t, cookieFor(subPatientA))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}
@@ -255,11 +237,11 @@ func TestReadBoundary_RLS_Enforcement(t *testing.T) {
 		// Each request authenticates independently, so the only way B's request
 		// returns A's row is a leaked session var — assert it never does.
 		for i := 0; i < 5; i++ {
-			_, rowsA := get(t, "Bearer "+mint(subPatientA))
+			_, rowsA := get(t, cookieFor(subPatientA))
 			if len(rowsA) != 1 || rowsA[0].EntityKey != "vtx.appointment.appt-A" {
 				t.Fatalf("iter %d: A leaked %+v", i, rowsA)
 			}
-			_, rowsB := get(t, "Bearer "+mint(subPatientB))
+			_, rowsB := get(t, cookieFor(subPatientB))
 			if len(rowsB) != 1 || rowsB[0].EntityKey != "vtx.appointment.appt-B" {
 				t.Fatalf("iter %d: B leaked %+v", i, rowsB)
 			}

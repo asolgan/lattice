@@ -494,13 +494,6 @@ func TestHandleLoginOptions(t *testing.T) {
 	})
 }
 
-func TestNewAuthenticators_NilSignerYieldsNilAuthenticators(t *testing.T) {
-	authn, refreshAuthn, err := NewAuthenticators(slog.Default(), "TESTAPP", nil)
-	require.NoError(t, err)
-	require.Nil(t, authn)
-	require.Nil(t, refreshAuthn)
-}
-
 func TestParsePersonas(t *testing.T) {
 	id1, id2 := testNanoID(t), testNanoID(t)
 	const envVar = "TESTAPP_DEMO_PERSONAS"

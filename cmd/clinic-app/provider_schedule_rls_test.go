@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/operatinggraph/lattice/internal/refractor/adapter"
@@ -15,7 +14,8 @@ import (
 // provisions the table + policy with the SAME refractor helpers a live
 // activation uses (BuildProtectedTableDDL / BuildGrantTableDDL), seeds two
 // providers' appointments + their self-grants, and drives
-// handleMyProviderSchedule through httptest with minted JWTs.
+// handleMyProviderSchedule through the real session middleware with signed
+// session cookies.
 //
 // Enforcement is REAL: the reader runs as a NON-superuser role (RLS is bypassed
 // by superusers/BYPASSRLS). Shares the helpers (skipIfNoPostgresRLS /
@@ -109,30 +109,11 @@ func TestProviderScheduleReadBoundary_RLS_Enforcement(t *testing.T) {
 		}
 	})
 
-	t.Setenv("CLINIC_APP_DEV_AUTH", "1")
-	authn, signer, err := setupReadAuth(discardLogger(), true, nil)
-	if err != nil {
-		t.Fatalf("setupReadAuth: %v", err)
-	}
-	s := &server{logger: discardLogger(), natsTimeout: testTimeout, pgPool: reader, authn: authn, devSigner: signer}
+	s, cookieFor := devSessionServer(t, func(s *server) { s.pgPool = reader })
 
-	mint := func(sub string) string {
+	get := func(t *testing.T, c *http.Cookie) (int, []protectedAppointmentRow) {
 		t.Helper()
-		tok, _, err := signer.mint(sub)
-		if err != nil {
-			t.Fatalf("mint %s: %v", sub, err)
-		}
-		return tok
-	}
-
-	get := func(t *testing.T, authz string) (int, []protectedAppointmentRow) {
-		t.Helper()
-		rec := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodGet, "/api/my-schedule", nil)
-		if authz != "" {
-			r.Header.Set("Authorization", authz)
-		}
-		s.handleMyProviderSchedule(rec, r)
+		rec := sessionGET(s, s.handleMyProviderSchedule, "/api/my-schedule", c)
 		var resp struct {
 			Appointments []protectedAppointmentRow `json:"appointments"`
 		}
@@ -141,7 +122,7 @@ func TestProviderScheduleReadBoundary_RLS_Enforcement(t *testing.T) {
 	}
 
 	t.Run("Sam sees only Sam's appointment", func(t *testing.T) {
-		code, rows := get(t, "Bearer "+mint(subProviderSam))
+		code, rows := get(t, cookieFor(subProviderSam))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}
@@ -151,7 +132,7 @@ func TestProviderScheduleReadBoundary_RLS_Enforcement(t *testing.T) {
 	})
 
 	t.Run("Pat sees only Pat's appointment", func(t *testing.T) {
-		code, rows := get(t, "Bearer "+mint(subProviderPat))
+		code, rows := get(t, cookieFor(subProviderPat))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}
@@ -161,13 +142,14 @@ func TestProviderScheduleReadBoundary_RLS_Enforcement(t *testing.T) {
 	})
 
 	t.Run("unauthenticated is 401", func(t *testing.T) {
-		if code, _ := get(t, ""); code != http.StatusUnauthorized {
+		if code, _ := get(t, nil); code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want 401", code)
 		}
 	})
 
-	t.Run("forged token is 401", func(t *testing.T) {
-		if code, _ := get(t, "Bearer not.a.jwt"); code != http.StatusUnauthorized {
+	t.Run("forged cookie is 401", func(t *testing.T) {
+		forged := &http.Cookie{Name: s.session.CookieName(), Value: "not.a.jwt"}
+		if code, _ := get(t, forged); code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want 401", code)
 		}
 	})
@@ -175,7 +157,7 @@ func TestProviderScheduleReadBoundary_RLS_Enforcement(t *testing.T) {
 	t.Run("revoked grant hides the row", func(t *testing.T) {
 		exec("UPDATE actor_read_grants SET is_deleted = true WHERE actor_id = $1", subProviderSam)
 		defer exec("UPDATE actor_read_grants SET is_deleted = false WHERE actor_id = $1", subProviderSam)
-		code, rows := get(t, "Bearer "+mint(subProviderSam))
+		code, rows := get(t, cookieFor(subProviderSam))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}

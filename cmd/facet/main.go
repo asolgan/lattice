@@ -138,7 +138,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	authn, refreshAuthn, err := appsession.NewAuthenticators(logger, envPrefix, signer)
+	authn, refreshAuthn, err := appsession.NewAuthenticators(logger, envPrefix, signer, nil)
 	if err != nil {
 		return err
 	}

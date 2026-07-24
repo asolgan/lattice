@@ -1,16 +1,19 @@
 "use strict";
 
-// Clinic app — book · my appointments · provider schedule (Increment A). Vanilla
-// JS, no build step. The Go server does all NATS I/O for reads: this view reads
-// /api/providers + /api/staff/patients + /api/appointments. Writes
-// (CreatePatient / CreateProvider / CreateAppointment / RescheduleAppointment /
-// SetAppointmentStatus / ...) go browser-direct to the Gateway's
-// POST /v1/operations via submitOp() (real-actor-write-auth-e2e-design.md §3.1).
+// Clinic app — book · my appointments · provider schedule. Vanilla JS, no build
+// step. The page is sign-in-first: one identity holds the whole session, the
+// HttpOnly session cookie authenticates every same-origin read (appGet), and
+// writes (CreatePatient / CreateProvider / CreateAppointment /
+// RescheduleAppointment / SetAppointmentStatus / ...) go browser-direct to the
+// Gateway's POST /v1/operations via submitOp() with that same session's bearer
+// (real-actor-write-auth-e2e-design.md §3.1). The Go server does the NATS I/O
+// behind the read endpoints.
 
 const PATIENT_KEY = "clinic.patient";
 const state = {
+  identityId: null, // the signed-in identity's bare NanoID (GET /api/whoami) — the one actor every read and write runs as
   patients: [], // append-only lookup cache — every patient the FE has ever seen, never shrinks (so an
-  // already-selected patient's contact/self-token lookups survive a later ?q= filter)
+  // already-selected patient's contact lookup survives a later ?q= filter)
   patientOptions: [], // the roster currently rendered in the #patient select — the full cache, or a
   // narrower ?q= match while a front-desk search is active
   providers: [],
@@ -23,11 +26,11 @@ const state = {
   series: [], // clinic-wide recurring visit series worklist (PROTECTED, staff wildcard, D1.5)
   mySeries: [], // the selected patient's own recurring visit series (PROTECTED, patient-self RLS, D1.5)
   ledger: null, // the selected patient's last-loaded /api/ledger response (billing history + balance)
-  patient: null, // the selected patient key (the trusted-tool context)
+  patient: null, // the patient key whose record is on screen (a data selection, not an actor choice)
   view: "book",
   highlight: null,
   rescheduling: null, // the appointment row being rescheduled (modal context)
-  reschedulingAsSelf: false, // whether the open reschedule modal was opened from the self-service toggle
+  reschedulingAsSelf: false, // whether the open reschedule modal belongs to the signed-in patient's own record
   documenting: null, // { a, onDone } for the Document-visit (RecordEncounter) modal
   wellnessBooking: null, // { a, identityKey, sessions } for the Care→Wellness referral modal
   schedView: "week", // Schedule tab calendar mode: "week" | "day"
@@ -70,16 +73,13 @@ async function api(path, opts) {
   return body;
 }
 
-// ---- Read-boundary token (D1.5) ----
-// My Appointments is served from the PROTECTED clinicAppointmentsRead Postgres
-// model as an authenticated actor: RLS returns only the signed-in patient's
-// rows, so the request must carry a verified JWT (there is no client-side
-// patient filter to forge — mirrors loftspace-app's D1.3 pattern). In the
-// trusted-tool DEMO posture the app mints a short-lived token for the selected
-// patient via POST /api/dev-token; a production deployment wires a real IdP and
-// the FE would present that token instead. The token is cached per subject
-// until shortly before expiry.
-let readTokenCache = { subject: null, token: null, exp: 0 };
+// ---- Session (the one signed-in identity) ----
+//
+// Every request this app makes runs as the identity the session cookie names:
+// the app's own protected endpoints read it straight off the cookie, and the
+// Gateway-direct write path presents the same session's token. There is no
+// second actor to pick, and nothing the browser can name to become someone
+// else — the front desk and a patient differ only in which identity signed in.
 
 // bareId extracts the bare identity NanoID (the RLS principal / JWT subject)
 // from a full vtx.patient.<id> (or vtx.identity.<id>) key.
@@ -88,107 +88,84 @@ function bareId(fullKey) {
   return i >= 0 ? fullKey.slice(i + 1) : fullKey || "";
 }
 
-async function readToken() {
-  if (!state.patient) return null;
-  const subject = bareId(state.patient);
-  const now = Date.now();
-  if (readTokenCache.subject === subject && readTokenCache.token && now < readTokenCache.exp - 60000) {
-    return readTokenCache.token;
+// isAuthLapse reports whether a failed request failed because the caller has
+// no valid session, as opposed to any other error.
+function isAuthLapse(e) {
+  return /HTTP 401|authentication required|login required/i.test((e && e.message) || "");
+}
+
+// onSessionLapsed hands the browser back to the login page. Once only: several
+// panels load in parallel and would otherwise each fire their own navigation.
+let sessionLapseHandled = false;
+function onSessionLapsed() {
+  if (sessionLapseHandled) return;
+  sessionLapseHandled = true;
+  location.replace("/login");
+}
+
+// appGet reads one of this app's own protected endpoints. The session cookie
+// is HttpOnly and rides a same-origin request automatically, so there is no
+// Authorization header to build and nothing cached to invalidate; a 401 means
+// the session itself is over, and the only answer is to sign in again.
+async function appGet(path) {
+  try {
+    return await api(path, { credentials: "same-origin" });
+  } catch (e) {
+    if (isAuthLapse(e)) onSessionLapsed();
+    throw e;
   }
-  const res = await fetch("/api/dev-token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ subject }),
-  });
+}
+
+// sessionWriteToken is the raw bearer the Gateway-direct write path needs. The
+// cookie cannot serve it — an Authorization header takes the literal value and
+// the cookie is unreadable from script — so POST /api/session/refresh hands the
+// token back (while re-setting the cookie) for exactly this. Cached until
+// shortly before its stated expiry; pass force to re-fetch after the Gateway
+// rejects the cached one.
+let writeTokenCache = { token: null, exp: 0 };
+
+async function sessionWriteToken(force) {
+  const now = Date.now();
+  if (!force && writeTokenCache.token && now < writeTokenCache.exp - 60000) {
+    return writeTokenCache.token;
+  }
+  const res = await fetch("/api/session/refresh", { method: "POST", credentials: "same-origin" });
+  if (res.status === 401) {
+    writeTokenCache = { token: null, exp: 0 };
+    onSessionLapsed();
+    throw new Error("your session has ended — sign in again");
+  }
   if (!res.ok) {
-    throw new Error("sign-in required — the read boundary has no demo token minter (deferred Gateway login)");
+    throw new Error("could not renew the session (HTTP " + res.status + ")");
   }
   const body = await res.json();
-  readTokenCache = { subject, token: body.token, exp: Date.parse(body.expiresAt) || now + 5 * 60000 };
+  writeTokenCache = { token: body.token, exp: Date.parse(body.expiresAt) || now + 5 * 60000 };
   return body.token;
 }
 
-// authedGet fetches a protected endpoint with the read-boundary Bearer token. On
-// a 401 (e.g. the app restarted with a fresh ephemeral dev-auth key, invalidating
-// a cached token) it clears the cache and retries once with a freshly minted token.
-async function authedGet(path) {
-  let token = await readToken();
-  if (!token) throw new Error("select a patient to sign in");
+// loadWhoami records who is signed in — the single actor every read and write
+// runs as — and offers sign-out only for a real cookie session. A boot-env
+// fallback identity is authenticated by no cookie, so there is nothing for a
+// sign-out to end: offering it would clear a cookie nobody used and bounce the
+// browser straight back in.
+async function loadWhoami() {
   try {
-    return await api(path, { headers: { Authorization: "Bearer " + token } });
-  } catch (e) {
-    if (!/HTTP 401|authentication required/i.test(e.message)) throw e;
-    readTokenCache = { subject: null, token: null, exp: 0 };
-    token = await readToken();
-    if (!token) throw e;
-    return api(path, { headers: { Authorization: "Bearer " + token } });
+    const body = await api("/api/whoami", { credentials: "same-origin" });
+    state.identityId = (body && body.loggedIn && body.identityId) || null;
+    const btn = $("#sign-out");
+    if (btn) btn.hidden = !(body && body.canSignOut);
+    const who = $("#signed-in-as");
+    if (who) who.textContent = state.identityId ? "Signed in · " + state.identityId.slice(0, 8) + "…" : "";
+  } catch (_) {
+    state.identityId = null;
   }
 }
 
-// providerReadToken is readToken's provider-anchored sibling (D1.5 Increment
-// 2), minting a demo token for a given provider key instead of the selected
-// patient. The Schedule tab's provider dropdown IS the "acting as" context here
-// (the same trusted-tool minting semantics as the patient switcher), not a
-// separate provider login flow — whichever provider is selected is who the
-// desk is viewing the schedule as, mirroring readToken's per-subject cache.
-let providerTokenCache = { subject: null, token: null, exp: 0 };
-
-async function providerReadToken(providerKey) {
-  const subject = bareId(providerKey);
-  if (!subject) return null;
-  const now = Date.now();
-  if (providerTokenCache.subject === subject && providerTokenCache.token && now < providerTokenCache.exp - 60000) {
-    return providerTokenCache.token;
-  }
-  const res = await fetch("/api/dev-token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ subject }),
-  });
-  if (!res.ok) {
-    throw new Error("sign-in required — the read boundary has no demo token minter (deferred Gateway login)");
-  }
-  const body = await res.json();
-  providerTokenCache = { subject, token: body.token, exp: Date.parse(body.expiresAt) || now + 5 * 60000 };
-  return body.token;
+function signOut() {
+  fetch("/api/logout", { method: "POST", credentials: "same-origin" })
+    .catch(() => {})
+    .finally(() => location.replace("/login"));
 }
-
-// authedGetAsProvider is authedGet's provider-anchored sibling: fetches a
-// protected endpoint with a Bearer token minted for providerKey, retrying once
-// on a 401 with a freshly minted token.
-async function authedGetAsProvider(path, providerKey) {
-  let token = await providerReadToken(providerKey);
-  if (!token) throw new Error("select a provider to view their schedule");
-  try {
-    return await api(path, { headers: { Authorization: "Bearer " + token } });
-  } catch (e) {
-    if (!/HTTP 401|authentication required/i.test(e.message)) throw e;
-    providerTokenCache = { subject: null, token: null, exp: 0 };
-    token = await providerReadToken(providerKey);
-    if (!token) throw e;
-    return api(path, { headers: { Authorization: "Bearer " + token } });
-  }
-}
-
-// selfWriteToken (patient self-service booking) mints/caches a demo token for
-// the selected patient's own LINKED IDENTITY — the capability-plane actor a
-// consumer-scope write authenticates as (clinic-patient-self-service-booking-
-// design.md Checkpoint item (a)). This is distinct from readToken(), which
-// mints for the patient key itself and only ever serves the Postgres-RLS read
-// boundary; the write path's actor is necessarily an identity (the capability
-// plane resolves cap.identity.<id>, never cap.patient.<id> — see
-// CreateAppointment's identifiedBy guard). Returns null when the selected
-// patient has no linked identity (no self-service possible yet for them).
-//
-// The linked identity is CreateUnclaimedIdentity's result — nothing may ever
-// authenticate AS it directly (it starts with no role); every actual request
-// must run the claim ceremony (ensureClaimedDevice, below) first and
-// authenticate as the resulting DEVICE identity instead. Minting a token for
-// the identity's own key here (the old shortcut) left it permanently
-// role-less: CreateAppointment's consumer scope=self grant never applied, and
-// every self-service booking 403'd (mirrors gateway-claim-flow-identity-
-// provisioning-design.md §11.1, same fix as LoftSpace's Apply claim ceremony).
-let selfTokenCache = { subject: null, token: null, exp: 0 };
 
 function patientIdentityKey() {
   return identityKeyForPatient(state.patient);
@@ -203,159 +180,22 @@ function identityKeyForPatient(patientKey) {
   return (m && m.identityKey) || null;
 }
 
-async function selfWriteToken() {
-  const identityKey = patientIdentityKey();
-  if (!identityKey) return null;
-  const subject = await ensureClaimedDevice(identityKey);
-  const now = Date.now();
-  if (selfTokenCache.subject === subject && selfTokenCache.token && now < selfTokenCache.exp - 60000) {
-    return selfTokenCache.token;
-  }
-  const res = await fetch("/api/dev-token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ subject }),
-  });
-  if (!res.ok) {
-    throw new Error("sign-in required — the read boundary has no demo token minter (deferred Gateway login)");
-  }
-  const body = await res.json();
-  selfTokenCache = { subject, token: body.token, exp: Date.parse(body.expiresAt) || now + 5 * 60000 };
-  return body.token;
-}
-
-// ---- Claim ceremony (gateway-claim-flow-identity-provisioning-design.md
-// §11.1 Scenario A / §11.1a — mirrors loftspace-app's Apply fix) ----
-//
-// A patient's linked identity U (CreateUnclaimedIdentity's result) can never
-// authenticate directly: U starts with no role, and ProvisionConsumerIdentity
-// refuses to touch a vertex some other op already created. Every self-service
-// write must instead authenticate as a separate DEVICE identity A that (1)
-// auto-provisions with the consumer role on its first Gateway touch, then (2)
-// calls ClaimIdentity to bind A -> U, which is what grants U the consumer role
-// and lets the Gateway's credential-bindings resolution turn a request
-// authenticated as A into env.Actor = U.
-const PATIENT_AUTH_KEY = "clinic.patientAuth"; // localStorage: {U-bareId: A-bareId}
-
-function loadPatientAuthMap() {
-  try {
-    return JSON.parse(localStorage.getItem(PATIENT_AUTH_KEY) || "{}");
-  } catch (_) {
-    return {};
-  }
-}
-
-function savePatientAuthEntry(uBareId, aBareId) {
-  const m = loadPatientAuthMap();
-  m[uBareId] = aBareId;
-  localStorage.setItem(PATIENT_AUTH_KEY, JSON.stringify(m));
-}
-
-// pendingClaimSecrets holds a freshly client-minted (not yet claimed) secret
-// for a linked identity created THIS session (submitNewPatient) — in-memory
-// only, mirroring §11.1a: "the client retains the plaintext; it is the single
-// copy." A patient whose identity was linked in a prior session (or before
-// this ceremony was wired up) has no pending secret and falls back to
-// staff-gated RotateClaimKey (R4) to re-issue one.
-const pendingClaimSecrets = {};
-
-// mintDeviceToken mints a fresh, uncached dev-token for an arbitrary bare
-// subject — the one-off device-identity (A) calls the claim ceremony makes,
-// distinct from selfWriteToken()'s per-identity cache.
-async function mintDeviceToken(subject) {
-  const res = await fetch("/api/dev-token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ subject }),
-  });
-  if (!res.ok) throw new Error("mint device token: HTTP " + res.status);
-  const body = await res.json();
-  return body.token;
-}
-
-// postOpAsSubject submits an operation to the Gateway authenticated as a raw
-// bare-id subject — used only by the claim ceremony, which must authenticate
-// as the fresh device identity A itself (the Gateway's raw-credential
-// carve-out for ClaimIdentity), not through the self/staff token caches.
-async function postOpAsSubject(subject, body) {
-  const [base, token] = await Promise.all([gatewayURL(), mintDeviceToken(subject)]);
-  return api(base + "/v1/operations", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-    body: JSON.stringify(body),
-  });
-}
-
-// claimCeremonyInFlight de-dupes concurrent ensureClaimedDevice callers for
-// the same linked identity onto the SAME promise — without this, two
-// concurrent first-touches for one never-claimed identity would each mint
-// their own device identity and race ClaimIdentity.
-const claimCeremonyInFlight = {};
-
-// ensureClaimedDevice runs the claim ceremony for identity uKey the first
-// time it's needed and returns its device identity's bare id (A) — the
-// subject every subsequent token for uKey mints against. Idempotent per uKey
-// via the persisted patientAuth map (both across calls and across reloads).
-async function ensureClaimedDevice(uKey) {
-  const uBareId = bareId(uKey);
-  const map = loadPatientAuthMap();
-  if (map[uBareId]) return map[uBareId];
-  if (claimCeremonyInFlight[uBareId]) return claimCeremonyInFlight[uBareId];
-  const promise = runClaimCeremony(uKey, uBareId).finally(() => {
-    delete claimCeremonyInFlight[uBareId];
-  });
-  claimCeremonyInFlight[uBareId] = promise;
-  return promise;
-}
-
-async function runClaimCeremony(uKey, uBareId) {
-  let secret = pendingClaimSecrets[uKey];
-  if (!secret) {
-    secret = mintClaimSecret();
-    const newHash = await sha256Hex(secret);
-    const rotateReply = await submitOp("RotateClaimKey", "identity", { identityKey: uKey, claimKeyHash: newHash }, [
-      uKey,
-      uKey + ".state",
-      uKey + ".claimKey",
-    ]);
-    const rotateMsg = rejectionMessage(rotateReply);
-    if (rotateMsg) throw new Error("could not prepare sign-in for this patient — " + rotateMsg);
-  }
-
-  const aBareId = await sha256NanoID(uBareId + ":device:" + mintClaimSecret());
-  const aKey = "vtx.identity." + aBareId;
-  const claimOp = {
-    operationType: "ClaimIdentity",
-    class: "identity",
-    reads: [uKey, uKey + ".state", uKey + ".claimKey"],
-    payload: { targetIdentityKey: uKey, claimKey: secret },
-    authContext: { target: aKey },
-  };
-
-  // A's ProvisionConsumerIdentity pre-flight (the Gateway's provisionActorIfNeeded,
-  // run inline just above by the fetch this postOpAsSubject makes) commits A's
-  // consumer-role grant to Core KV synchronously, but the CapabilityAuthorizer
-  // reads it via an asynchronously-projected Capability Lens — so THIS very next
-  // call, submitted milliseconds later under the same brand-new actor, can race
-  // ahead of that projection (isTransientAuthLag, below).
-  let claimReply;
-  for (let attempt = 0; ; attempt++) {
-    claimReply = await postOpAsSubject(aBareId, claimOp);
-    if (!isTransientAuthLag(claimReply) || attempt >= retryBackoffsMs.length) break;
-    await new Promise((resolve) => setTimeout(resolve, retryBackoffsMs[attempt]));
-  }
-  const claimMsg = rejectionMessage(claimReply);
-  if (claimMsg) throw new Error("could not sign in this patient — " + claimMsg);
-  delete pendingClaimSecrets[uKey];
-  savePatientAuthEntry(uBareId, aBareId);
-  return aBareId;
+// actingAsSelf reports whether the signed-in identity IS the patient whose
+// record is on screen — the one case a write submits under CreateAppointment /
+// RescheduleAppointment / SetAppointmentStatus's consumer scope=self grant
+// (authContext.target naming that identity) rather than staff-on-behalf-of.
+// It is derived from who signed in, never declared: a front-desk session is
+// never the patient, and a patient session is never anybody else.
+function actingAsSelf(patientKey) {
+  const linked = identityKeyForPatient(patientKey === undefined ? state.patient : patientKey);
+  return !!(linked && state.identityId && bareId(linked) === state.identityId);
 }
 
 // isTransientAuthLag reports whether a rejected reply is the known,
 // architecturally-expected async-projection race — the Capability Lens or the
 // credential-bindings materializer (both eventually-consistent CDC
 // projections, lattice-architecture.md's documented <500ms p99 lag) catching
-// up after a first-touch provision or claim, not yet visible to THIS
+// up after an actor's first touch, not yet visible to THIS
 // immediately-following request. Distinguishes it from a genuine, persistent
 // authorization denial, which should surface immediately rather than retry.
 function isTransientAuthLag(reply) {
@@ -366,46 +206,10 @@ function isTransientAuthLag(reply) {
 }
 
 // retryBackoffsMs is the bounded backoff schedule the isTransientAuthLag
-// retry loops in this file share — ~3s total, comfortably under the 5s
-// deadline the codebase's own Go E2E poll helper
+// retry loop uses — ~3s total, comfortably under the 5s deadline the
+// codebase's own Go E2E poll helper
 // (scripts/verify-real-actor-write-auth.go) uses for the same class of race.
 const retryBackoffsMs = [200, 400, 800, 1600];
-
-// staffReadToken (D1.5, the staff wildcard increment) mints/caches a demo
-// token for the clinic-wide STAFF view via POST /api/staff/dev-token — unlike
-// readToken/providerReadToken it carries no subject: the server mints for its
-// own fixed admin actor, so the FE never needs to know (or be trusted to
-// name) which identity holds the wildcard grant.
-let staffTokenCache = { token: null, exp: 0 };
-
-async function staffReadToken() {
-  const now = Date.now();
-  if (staffTokenCache.token && now < staffTokenCache.exp - 60000) {
-    return staffTokenCache.token;
-  }
-  const res = await fetch("/api/staff/dev-token", { method: "POST" });
-  if (!res.ok) {
-    throw new Error("sign-in required — the read boundary has no demo token minter (deferred Gateway login)");
-  }
-  const body = await res.json();
-  staffTokenCache = { token: body.token, exp: Date.parse(body.expiresAt) || now + 5 * 60000 };
-  return body.token;
-}
-
-// authedGetAsStaff fetches a protected endpoint with the staff Bearer token,
-// retrying once on a 401 with a freshly minted token — the clinic-wide sibling
-// of authedGet/authedGetAsProvider.
-async function authedGetAsStaff(path) {
-  let token = await staffReadToken();
-  try {
-    return await api(path, { headers: { Authorization: "Bearer " + token } });
-  } catch (e) {
-    if (!/HTTP 401|authentication required/i.test(e.message)) throw e;
-    staffTokenCache = { token: null, exp: 0 };
-    token = await staffReadToken();
-    return api(path, { headers: { Authorization: "Bearer " + token } });
-  }
-}
 
 function toast(msg, kind, extra) {
   const t = $("#toast");
@@ -446,20 +250,20 @@ function practicesAtLinkKey(providerKey, siteKey) {
 //
 // submitOp posts an op browser-direct to the Gateway's POST /v1/operations
 // (real-actor-write-auth-e2e-design.md §3.1) instead of proxying through this
-// app's own /api/op. Almost every clinic op is operator-only, so every write
-// carries the staff Bearer token by default — the same actor (this app's
-// admin identity) /api/op used to stamp server-side, now verified by the
-// Gateway instead of assumed. CreateAppointment ALSO carries a real
-// consumer-scope=self grant (clinic-patient-self-service-booking-design.md):
-// passing opts.asSelf submits as the selected patient's own linked identity
-// instead, with authContext.target naming that identity — the Gateway/Processor
-// authorize the write as the real patient, not staff-on-their-behalf. Returns
-// the reply (with .status) so callers can branch on rejected, same as before.
-// selfWriteToken() resolves the patient's linked identity through the claim
-// ceremony (ensureClaimedDevice), so an asSelf submit racing right behind a
-// fresh claim gets the same bounded isTransientAuthLag retry that ceremony
-// already uses — staff never races this (a long-lived, already-resolved
-// actor), so it submits once.
+// app's own /api/op. Every write carries the SESSION's own bearer, so the
+// Gateway authorizes the actual signed-in identity — front-desk staff for the
+// operator-only ops, and the patient themselves for the ones clinic-domain
+// grants at consumer scope=self (clinic-patient-self-service-booking-
+// design.md). opts.asSelf marks that second case: the caller has established
+// that the signed-in identity IS the patient on screen (actingAsSelf), and the
+// submit stamps authContext.target with that identity so the Processor
+// evaluates the self grant rather than staff-on-their-behalf. Returns the reply
+// (with .status) so callers can branch on rejected.
+//
+// A self-service submit gets the bounded isTransientAuthLag retry: a patient
+// identity signing in for the first time can outrun its own capability
+// projection. A staff actor is long-lived and already projected, so it submits
+// once.
 let gatewayURLCache = null;
 async function gatewayURL() {
   if (gatewayURLCache) return gatewayURLCache;
@@ -470,22 +274,32 @@ async function gatewayURL() {
 
 async function submitOp(operationType, klass, payload, reads, opts) {
   const asSelf = !!(opts && opts.asSelf);
-  const [base, token] = await Promise.all([gatewayURL(), asSelf ? selfWriteToken() : staffReadToken()]);
-  if (asSelf && !token) throw new Error("this patient has no linked identity — self-service booking is unavailable");
+  const [base, token] = await Promise.all([gatewayURL(), sessionWriteToken()]);
   const body = { operationType, class: klass, payload, reads };
   if (opts && opts.optionalReads) body.optionalReads = opts.optionalReads;
   if (asSelf) body.authContext = { target: patientIdentityKey() };
-  const post = () =>
+  const post = (bearer) =>
     api(base + "/v1/operations", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + bearer },
       body: JSON.stringify(body),
     });
-  if (!asSelf) return post();
+  // A Gateway 401 means the cached token aged out between the expiry check and
+  // this request; one forced renewal settles it, and a second 401 is a session
+  // that is genuinely over (sessionWriteToken hands off to /login).
+  const submit = async () => {
+    try {
+      return await post(token);
+    } catch (e) {
+      if (!isAuthLapse(e)) throw e;
+      return post(await sessionWriteToken(true));
+    }
+  };
+  if (!asSelf) return submit();
 
   let reply;
   for (let attempt = 0; ; attempt++) {
-    reply = await post();
+    reply = await submit();
     if (!isTransientAuthLag(reply) || attempt >= retryBackoffsMs.length) break;
     await new Promise((resolve) => setTimeout(resolve, retryBackoffsMs[attempt]));
   }
@@ -532,11 +346,14 @@ function friendlyBookingRejection(msg) {
   return msg;
 }
 
-// ---- Patient context (the trusted-tool switcher) ----
+// ---- Patient context (whose record is on screen) ----
 //
-// No per-user auth yet (P5/trust model): the user picks which patient they are
-// from a human-readable roster (the clinicPatients lens read model, never Core
-// KV). The selected key is persisted in localStorage so a refresh keeps context.
+// A data selection, not an actor choice — the signed-in identity is fixed for
+// the whole session. The roster comes from the clinicPatients lens read model
+// (P5 — never Core KV) and is RLS-scoped to what the signed-in identity may
+// see, so a patient session finds only itself here while the front desk sees
+// the practice. The selected key is persisted in localStorage so a refresh
+// keeps context.
 
 function nameForPatient(key) {
   const m = state.patients.find((p) => p.patientKey === key);
@@ -565,21 +382,19 @@ function restorePatient() {
   state.patient = saved || null;
 }
 
-// loadPatients reads the clinic-wide patient roster from the PROTECTED,
-// RLS-scoped /api/staff/patients (D1.5, the staff wildcard increment) — the
-// switcher used to read the unprotected /api/patients, letting ANY caller dump
-// every patient's full name with no authentication at all (a membership-
-// disclosure PHI leak). authedGetAsStaff mints its own fixed-subject token, so
-// this still works before a patient has been selected. q, if given, narrows
-// the server-side query to a name match (the front-desk typeahead) — the
-// result only replaces state.patientOptions (what the select renders); it is
-// merged INTO state.patients (never removed from it), so a patient the search
-// scrolls past never loses its resolvable contact/self-token lookup.
+// loadPatients reads the patient roster from the PROTECTED, RLS-scoped
+// /api/staff/patients — the session's identity decides how much of it comes
+// back, so no client-side filter is load-bearing and no unauthenticated caller
+// can dump every patient's name (a membership-disclosure PHI leak). q, if
+// given, narrows the server-side query to a name match (the front-desk
+// typeahead) — the result only replaces state.patientOptions (what the select
+// renders); it is merged INTO state.patients (never removed from it), so a
+// patient the search scrolls past never loses its resolvable contact lookup.
 async function loadPatients(q) {
   const query = (q || "").trim();
   try {
     const path = query ? "/api/staff/patients?q=" + encodeURIComponent(query) : "/api/staff/patients";
-    const data = await authedGetAsStaff(path);
+    const data = await appGet(path);
     const results = data.patients || [];
     state.patientOptions = results;
     if (query) {
@@ -653,40 +468,11 @@ function setPatient(value) {
   }
 }
 
-// syncBookPatient reflects the selected patient into the Book tab's read-only echo,
-// enables/disables the Book button, and toggles the self-service checkbox — offered
-// only when the selected patient has a linked identity (patientIdentityKey()), the
-// precondition CreateAppointment's consumer scope=self grant enforces server-side.
-// Unchecked + disabled whenever the patient changes, so a stale self-service choice
-// never survives a switch to an unlinked (or different) patient.
+// syncBookPatient reflects the selected patient into the Book tab's read-only
+// echo and enables/disables the Book button.
 function syncBookPatient() {
   const echo = $("#book-patient");
   echo.textContent = state.patient ? nameForPatient(state.patient) : "Select a patient above first.";
-  const selfBox = $("#book-self");
-  const selfHint = $("#book-self-hint");
-  const linked = !!patientIdentityKey();
-  selfBox.checked = false;
-  selfBox.disabled = !linked;
-  if (selfHint) {
-    selfHint.textContent = state.patient && !linked
-      ? "This patient has no linked identity yet — self-service booking needs one (add email/phone when creating a patient)."
-      : "";
-  }
-  // My Appointments' self-service toggle shares the same precondition as
-  // Book's — RescheduleAppointment / SetAppointmentStatus's consumer
-  // scope=self grants both require the same identifiedBy link
-  // CreateAppointment's does (ddls.go).
-  const apptsSelfBox = $("#appts-self");
-  if (apptsSelfBox) {
-    const apptsSelfHint = $("#appts-self-hint");
-    apptsSelfBox.checked = false;
-    apptsSelfBox.disabled = !linked;
-    if (apptsSelfHint) {
-      apptsSelfHint.textContent = state.patient && !linked
-        ? "This patient has no linked identity yet — self-service needs one (add email/phone when creating a patient)."
-        : "";
-    }
-  }
   refreshBookEnabled();
 }
 
@@ -718,11 +504,9 @@ async function sha256Hex(s) {
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// mintClaimSecret returns a random claim-secret plaintext. It is hashed and only
-// the hash is sent; the plaintext never enters Lattice. Used both for a real
-// CreateUnclaimedIdentity claimKeyHash and, elsewhere, as raw entropy for
-// deriving a device identity's NanoID (ensureClaimedDevice) — a fresh
-// unpredictable value, not a secret that has to survive that second use.
+// mintClaimSecret returns a random claim-secret plaintext for a new patient's
+// unclaimed identity. It is hashed and only the hash is sent as
+// CreateUnclaimedIdentity's claimKeyHash; the plaintext never enters Lattice.
 function mintClaimSecret() {
   const a = new Uint8Array(32);
   crypto.getRandomValues(a);
@@ -809,8 +593,7 @@ async function submitNewPatient(ev) {
   try {
     let identityKey = "";
     if (email || phone) {
-      const claimSecret = mintClaimSecret();
-      const claimKeyHash = await sha256Hex(claimSecret);
+      const claimKeyHash = await sha256Hex(mintClaimSecret());
       const idPayload = { name, claimKeyHash };
       if (email) idPayload.email = email;
       if (phone) idPayload.phone = phone;
@@ -822,20 +605,6 @@ async function submitNewPatient(ev) {
         return;
       }
       identityKey = idReply && idReply.primaryKey ? idReply.primaryKey : "";
-      if (identityKey) {
-        // Run the real claim ceremony now, while the plaintext secret still
-        // exists (§11.1a — Lattice never stores it): without this the linked
-        // identity is created but role-less, and every self-service booking
-        // 403s. Best-effort — a failure here still leaves the patient created
-        // (with a linked identity); the RotateClaimKey fallback in
-        // ensureClaimedDevice can retry it the first time self-service is used.
-        pendingClaimSecrets[identityKey] = claimSecret;
-        try {
-          await ensureClaimedDevice(identityKey);
-        } catch (e) {
-          toast("Patient created, but self-service sign-in setup failed — " + e.message, "err");
-        }
-      }
     }
 
     const payload = { fullName: name };
@@ -1641,14 +1410,13 @@ async function providerAppointments(provider) {
 // patient is already booked elsewhere, which the op rejects as a PatientDoubleBook.
 // Invalidated on a successful booking alongside the provider cache.
 //
-// D1.5: reads the PROTECTED /api/my-appointments endpoint (RLS, patient-self
-// anchor) instead of the old unauthenticated `?patient=` filter — patient is
-// always the signed-in state.patient (its only caller), so the authenticated
-// actor's own rows are exactly what this needs.
+// Reads the PROTECTED /api/my-appointments endpoint (RLS, patient-self anchor)
+// rather than a client-supplied `?patient=` filter — the rows come back scoped
+// to the signed-in identity, which is exactly what this needs.
 async function patientAppointments(patient) {
   if (state.slotPatientApptCache[patient]) return state.slotPatientApptCache[patient];
   try {
-    const data = await authedGet("/api/my-appointments");
+    const data = await appGet("/api/my-appointments");
     state.slotPatientApptCache[patient] = data.appointments || [];
   } catch (e) {
     state.slotPatientApptCache[patient] = [];
@@ -2189,7 +1957,7 @@ async function submitBook(ev) {
   const site = $("#book-site") ? $("#book-site").value : "";
   if (site) payload.site = site;
 
-  const asSelf = $("#book-self").checked && !$("#book-self").disabled;
+  const asSelf = actingAsSelf();
 
   const submit = $("#book-submit");
   submit.disabled = true;
@@ -2268,11 +2036,9 @@ async function loadAppts() {
   }
   $("#appts-summary").textContent = "loading…";
   try {
-    // D1.5: the PROTECTED, RLS-scoped, authenticated read (see
-    // patientAppointments' doc above the sibling slot-picker call) — replaces
-    // the old unauthenticated `?patient=` vector that let anyone impersonate any
-    // patient.
-    const data = await authedGet("/api/my-appointments");
+    // The PROTECTED, RLS-scoped, session-authenticated read (see
+    // patientAppointments' doc above the sibling slot-picker call).
+    const data = await appGet("/api/my-appointments");
     state.appts = data.appointments || [];
   } catch (e) {
     grid.innerHTML = "";
@@ -2320,12 +2086,11 @@ function renderAppts() {
   }
   empty.hidden = true;
 
-  // Self-service (a real patient acting through their own linked identity,
-  // consumer scope=self) offers only Cancel/Reschedule — never the operator
-  // lifecycle buttons (confirm/check-in/complete/no-show) or clinical
-  // documentation, which stay staff-only regardless of the toggle.
-  const selfBox = $("#appts-self");
-  const asSelf = !!(selfBox && selfBox.checked && !selfBox.disabled);
+  // A patient looking at their own record (consumer scope=self) gets only
+  // Cancel/Reschedule — never the operator lifecycle buttons
+  // (confirm/check-in/complete/no-show) or clinical documentation, which are
+  // the front desk's.
+  const asSelf = actingAsSelf();
 
   const section = (label, rows) => {
     if (rows.length === 0) return;
@@ -2354,10 +2119,9 @@ function renderAppts() {
 // same patient's record (the natural close-the-loop signal); the default filter hides
 // those so the list behaves as a worklist that empties.
 //
-// Reads the PROTECTED, RLS-scoped /api/staff/appointments (D1.5, the staff
-// wildcard increment) — a staff actor's WildcardAnchor grant returns every
-// appointment, closing the unauthenticated clinic-wide dump the unprotected
-// /api/appointments used to serve.
+// Reads the PROTECTED, RLS-scoped /api/staff/appointments as the signed-in
+// identity — a staff actor's WildcardAnchor grant returns every appointment,
+// and any other identity gets only what it is entitled to.
 
 async function loadFollowups() {
   const grid = $("#followups");
@@ -2365,7 +2129,7 @@ async function loadFollowups() {
   $("#followups-summary").textContent = "loading…";
   let all;
   try {
-    const data = await authedGetAsStaff("/api/staff/appointments");
+    const data = await appGet("/api/staff/appointments");
     all = data.appointments || [];
   } catch (e) {
     grid.innerHTML = "";
@@ -2568,7 +2332,7 @@ async function loadSeries() {
   const empty = $("#series-empty");
   if ($("#series-summary")) $("#series-summary").textContent = "loading…";
   try {
-    const data = await authedGetAsStaff("/api/staff/visit-series");
+    const data = await appGet("/api/staff/visit-series");
     state.series = data.series || [];
   } catch (e) {
     grid.innerHTML = "";
@@ -2593,7 +2357,7 @@ async function loadMySeries() {
     return;
   }
   try {
-    const data = await authedGet("/api/my-visit-series");
+    const data = await appGet("/api/my-visit-series");
     state.mySeries = data.series || [];
   } catch (e) {
     state.mySeries = [];
@@ -2611,8 +2375,8 @@ async function loadMySeries() {
 // from the patient's own NanoID), so GET /api/ledger resolves it server-side
 // via the `clinicPatientAccounts` lens and returns "" when the patient hasn't
 // opened one yet — the FE never guesses it. Mirrors loftspace-app's payment
-// ledger, keyed by patient instead of lease. /api/ledger is staff-authenticated
-// (authedGetAsStaff) — it is a front-desk-only view today, gated the same as
+// ledger, keyed by patient instead of lease. /api/ledger is session-
+// authenticated — it is a front-desk view today, gated the same as
 // /api/staff/patients.
 
 // moneyAmount formats a cents amount as a USD-style dollar figure.
@@ -2640,7 +2404,7 @@ async function loadLedger() {
   empty.hidden = true;
   let data;
   try {
-    data = await authedGetAsStaff("/api/ledger?patientKey=" + encodeURIComponent(state.patient));
+    data = await appGet("/api/ledger?patientKey=" + encodeURIComponent(state.patient));
   } catch (e) {
     balanceEl.textContent = "";
     empty.hidden = false;
@@ -2701,7 +2465,7 @@ async function openLedgerAccount(patientKey) {
   // the loser's guard-aspect create-only write — re-fetch the ledger, which
   // resolves the account key via the clinicPatientAccounts lens regardless of
   // which side won.
-  const data = await authedGetAsStaff("/api/ledger?patientKey=" + encodeURIComponent(patientKey));
+  const data = await appGet("/api/ledger?patientKey=" + encodeURIComponent(patientKey));
   if (data.accountKey) return data.accountKey;
   const msg = rejectionMessage(reply);
   throw new Error(msg || "could not open the ledger account");
@@ -3021,12 +2785,11 @@ async function submitStartSeries() {
 //
 // The Schedule tab is a positioned calendar grid: a time axis down the left, one
 // column per day (7 in Week view, 1 in Day view), and each appointment rendered as
-// a block sized to its duration and coloured by status. A single provider reads
-// the PROTECTED /api/my-schedule (RLS, provider-self anchor, D1.5 Increment 2) —
-// the dropdown selection IS the "acting as" context, minting a token for that
-// provider, mirroring the patient switcher's minting semantics. "All providers"
-// mode reads the PROTECTED, RLS-scoped /api/staff/appointments (D1.5, the staff
-// wildcard increment) as the staff actor. Either way the grid filters
+// a block sized to its duration and coloured by status. It reads the PROTECTED,
+// RLS-scoped /api/staff/appointments as the signed-in identity — so the grid
+// shows the practice to a desk session and nothing to anyone else — and the
+// provider dropdown narrows those rows client-side. The dropdown therefore
+// picks WHAT to look at, never WHO to look as. The grid also filters
 // client-side to the visible period (no date-range query needed). Clicking a
 // block opens a read-only detail panel — the desk view doesn't mutate
 // (Cancel / Reschedule live on My Appointments).
@@ -3054,14 +2817,20 @@ async function loadSchedule() {
   }
   $("#schedule-summary").textContent = "loading…";
   try {
-    // All-providers mode reads the PROTECTED, RLS-scoped staff model (the
-    // WildcardAnchor grant); a single provider reads the PROTECTED,
-    // RLS-scoped model as that provider.
-    const data =
+    // One read, always the same one: the PROTECTED, RLS-scoped practice model,
+    // as the signed-in identity. What comes back is whatever that identity is
+    // entitled to see — a wildcard-granted desk session gets the practice, and
+    // anyone else gets nothing. The dropdown then narrows the returned rows
+    // client-side, so it picks WHAT to look at, never WHO to look as. It
+    // deliberately does not reach for /api/my-schedule: that endpoint answers
+    // strictly for its own caller and takes no provider argument, precisely so
+    // no client can name a provider and read their day.
+    const data = await appGet("/api/staff/appointments");
+    const all = data.appointments || [];
+    state.schedule =
       provider === SCHED_ALL
-        ? await authedGetAsStaff("/api/staff/appointments")
-        : await authedGetAsProvider("/api/my-schedule", provider);
-    state.schedule = data.appointments || [];
+        ? all
+        : all.filter((a) => a.providerKey === provider);
   } catch (e) {
     $("#schedule").innerHTML = "";
     empty.hidden = false;
@@ -3977,9 +3746,14 @@ function showView(view) {
 
 function init() {
   restorePatient();
-  loadPatients();
-  loadProviders();
-  loadSites();
+  // Who signed in decides every derived affordance (a patient acting on their
+  // own record vs the front desk acting on someone's behalf), so it has to be
+  // known before the first render that reads it.
+  loadWhoami().then(() => {
+    loadPatients();
+    loadProviders();
+    loadSites();
+  });
 
   // Discourage a past booking from the picker itself; refresh on focus so a
   // long-open session never carries a stale floor. The op stays the authority.
@@ -3996,6 +3770,7 @@ function init() {
   // (renderSlotCalendar), which greys out unbookable days; the per-slot past check
   // remains the floor and the op stays the authority.
 
+  $("#sign-out").addEventListener("click", signOut);
   $("#patient").addEventListener("change", (e) => setPatient(e.target.value));
   wirePatientSearch();
   wireProviderSearch();
@@ -4092,7 +3867,6 @@ function init() {
   });
   $("#reload-appts").addEventListener("click", loadAppts);
   $("#appts-filter").addEventListener("change", renderAppts);
-  $("#appts-self").addEventListener("change", renderAppts);
   $("#ledger-charge").addEventListener("click", () => submitLedgerEntry("DebitAccount", "record the charge"));
   $("#ledger-payment").addEventListener("click", () => submitLedgerEntry("CreditAccount", "record the payment"));
   $("#reload-followups").addEventListener("click", loadFollowups);
